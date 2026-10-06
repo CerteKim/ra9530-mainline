@@ -29,6 +29,14 @@
  * The two AP-side power controls are optional in this driver: the firmware
  * already leaves them asserted, so the charger works even if the device tree
  * does not describe them.
+ *
+ * The hall sensors that detect the stylus are wired to interrupts as well, and
+ * the driver notifies "pen_present" through sysfs_notify() whenever the derived
+ * state changes, so userspace can wait for the pen instead of polling for it
+ * (see ra9530_pen_update()).  A one second tick re-reads the sensors as a
+ * safety net, and the five second monitor stays as the slow backstop for
+ * whatever the edges and the tick miss - for instance edges that are lost
+ * while the system is suspended.
  */
 
 #include <linux/bitops.h>
@@ -121,6 +129,19 @@
 #define RA9530_MODE_POLL_MS	20
 #define RA9530_MODE_POLL_TRIES	10
 #define RA9530_MONITOR_MS	5000
+/* The hall signal bounces while the pen is being placed, so let it settle. */
+#define RA9530_DETECT_DEBOUNCE_MS	20
+/*
+ * Safety-net tick for the pen state: two GPIO reads and nothing else.
+ *
+ * The edges are the fast path - measured end to end at 3-6 ms between the hall
+ * transition and userspace acting on the notification - but they are edge
+ * triggered: edges that arrive while the system is suspended are lost, and a
+ * pen resting at the edge of the dock's field makes the hall flip between
+ * states.  The five second monitor is far too coarse for a dock that mutes the
+ * digitizer, so keep a check of our own.
+ */
+#define RA9530_DETECT_POLL_MS	1000
 
 /*
  * This hardware never reports the pen's state of charge through the charger
@@ -163,8 +184,12 @@ struct ra9530_chg {
 
 	int			irq;
 	char			irq_name[32];
+	int			detect_irq[2];	/* hall edges, 0 = none */
+	char			detect_irq_name[2][32];
 
 	struct delayed_work	monitor;
+	struct delayed_work	detect_debounce;	/* hall IRQ debounce */
+	struct delayed_work	detect_poll;		/* safety-net tick */
 	struct power_supply	*psy;
 	struct power_supply_desc psy_desc;
 
@@ -449,6 +474,42 @@ static bool ra9530_pen_present(struct ra9530_chg *chg)
 
 	return gpiod_get_value_cansleep(chg->detect[0]) !=
 	       gpiod_get_value_cansleep(chg->detect[1]);
+}
+
+/*
+ * Recompute the pen state and publish a change.
+ *
+ * This is the only place "pen_present" is notified from, and it runs wherever
+ * the state can change: the hall GPIO edges, and the monitor's fallback check.
+ * Userspace (the pen policy daemon) blocks on that notification instead of
+ * polling the attribute - without it, a pen taken off the dock is only noticed
+ * on the next monitor tick, up to five seconds later.
+ *
+ * kernfs_notify(), called by sysfs_notify(), wakes poll()/select() waiters and
+ * kicks fsnotify, so both poll() and inotify see the change.  It is safe from
+ * the threaded IRQ context.
+ *
+ * Caller holds chg->lock.
+ */
+static void ra9530_pen_update(struct ra9530_chg *chg)
+{
+	bool pen = ra9530_pen_present(chg);
+
+	if (pen == chg->pen_present)
+		return;
+
+	dev_info(chg->dev, "pen %s\n", pen ? "attached" : "detached");
+	chg->pen_present = pen;
+
+	if (!pen) {
+		/* a fresh attachment is a new charging session */
+		chg->charge_full = false;
+		chg->rpp_idle_since = 0;
+	}
+
+	sysfs_notify(&chg->dev->kobj, NULL, "pen_present");
+	if (chg->psy)
+		power_supply_changed(chg->psy);
 }
 
 /* ------------------------------------------------------------ power supply */
@@ -862,6 +923,59 @@ out:
 
 /* ---------------------------------------------------------------- monitor */
 
+/*
+ * An edge on either hall sensor means the derived state may have changed.
+ *
+ * The handler only defers: reading the sensors goes through
+ * gpiod_get_value_cansleep(), which belongs in process context, and the hall
+ * signal bounces while the pen is being placed - the delay lets it settle so
+ * the work reads the final state, instead of catching a transient.
+ *
+ * It also matters that the handler returns at once: the IRQ is ONESHOT, so the
+ * line stays masked until its thread completes, and doing the work here would
+ * mean holding that mask while waiting for chg->lock, which the monitor holds
+ * across its I2C refresh.  Edges arriving in that window were being dropped.
+ * If these IRQs cannot be registered the driver still works - the monitor below
+ * keeps checking every RA9530_MONITOR_MS.
+ */
+static irqreturn_t ra9530_detect_irq(int irq, void *data)
+{
+	struct ra9530_chg *chg = data;
+
+	mod_delayed_work(system_wq, &chg->detect_debounce,
+			 msecs_to_jiffies(RA9530_DETECT_DEBOUNCE_MS));
+
+	return IRQ_HANDLED;
+}
+
+static void ra9530_detect_work(struct work_struct *work)
+{
+	struct ra9530_chg *chg = container_of(to_delayed_work(work),
+					      struct ra9530_chg, detect_debounce);
+
+	mutex_lock(&chg->lock);
+	ra9530_pen_update(chg);
+	mutex_unlock(&chg->lock);
+}
+
+/*
+ * The fallback tick: see RA9530_DETECT_POLL_MS for why the edges alone are not
+ * enough on this board.  Lives outside the monitor so it stays two GPIO reads
+ * and never touches I2C.
+ */
+static void ra9530_detect_poll_work(struct work_struct *work)
+{
+	struct ra9530_chg *chg = container_of(to_delayed_work(work),
+					      struct ra9530_chg, detect_poll);
+
+	mutex_lock(&chg->lock);
+	ra9530_pen_update(chg);
+	mutex_unlock(&chg->lock);
+
+	schedule_delayed_work(&chg->detect_poll,
+			      msecs_to_jiffies(RA9530_DETECT_POLL_MS));
+}
+
 static void ra9530_monitor_work(struct work_struct *work)
 {
 	struct ra9530_chg *chg = container_of(to_delayed_work(work),
@@ -871,16 +985,12 @@ static void ra9530_monitor_work(struct work_struct *work)
 
 	mutex_lock(&chg->lock);
 
-	pen = ra9530_pen_present(chg);
-	if (pen != chg->pen_present) {
-		dev_info(chg->dev, "pen %s\n", pen ? "attached" : "detached");
-		chg->pen_present = pen;
-		if (!pen) {
-			/* a fresh attachment is a new charging session */
-			chg->charge_full = false;
-			chg->rpp_idle_since = 0;
-		}
-	}
+	/*
+	 * Fallback for the hall edges: they are edge triggered, and edges that
+	 * happen while the system is suspended are not delivered.
+	 */
+	ra9530_pen_update(chg);
+	pen = chg->pen_present;
 
 	ra9530_refresh_locked(chg);
 
@@ -959,6 +1069,8 @@ static int ra9530_suspend(struct device *dev)
 	struct ra9530_chg *chg = dev_get_drvdata(dev);
 
 	cancel_delayed_work_sync(&chg->monitor);
+	cancel_delayed_work_sync(&chg->detect_debounce);
+	cancel_delayed_work_sync(&chg->detect_poll);
 
 	mutex_lock(&chg->lock);
 	ra9530_tx_disable(chg);
@@ -972,6 +1084,8 @@ static int ra9530_resume(struct device *dev)
 	struct ra9530_chg *chg = dev_get_drvdata(dev);
 
 	schedule_delayed_work(&chg->monitor, 0);
+	schedule_delayed_work(&chg->detect_poll,
+			      msecs_to_jiffies(RA9530_DETECT_POLL_MS));
 
 	return 0;
 }
@@ -1031,6 +1145,7 @@ static int ra9530_probe(struct i2c_client *client)
 	struct power_supply_config psy_cfg = {};
 	u16 chip_id = 0;
 	u8 rev = 0, customer = 0;
+	int i, irq;
 	int ret;
 
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
@@ -1083,6 +1198,45 @@ static int ra9530_probe(struct i2c_client *client)
 			 always_on ? "charging unconditionally"
 				   : "charging disabled (use always_on=1)");
 
+	/*
+	 * Edge on either hall sensor, so that userspace can wait on the
+	 * "pen_present" attribute instead of polling it.  Both edges: the pen
+	 * attaching pulls one sensor one way and the other the opposite.
+	 * Entirely optional - a GPIO without an IRQ, or a failing request, only
+	 * means the monitor below stays the only source, just later.
+	 */
+	for (i = 0; i < ARRAY_SIZE(chg->detect); i++) {
+		if (!chg->detect[i])
+			continue;
+
+		irq = gpiod_to_irq(chg->detect[i]);
+		if (irq < 0) {
+			dev_warn(chg->dev,
+				 "pen-detect %d has no IRQ (%d), polling only\n",
+				 i, irq);
+			continue;
+		}
+
+		snprintf(chg->detect_irq_name[i],
+			 sizeof(chg->detect_irq_name[i]),
+			 "%s-pen%d", dev_name(chg->dev), i);
+		ret = devm_request_threaded_irq(chg->dev, irq, NULL,
+						ra9530_detect_irq,
+						IRQF_ONESHOT |
+						IRQF_TRIGGER_RISING |
+						IRQF_TRIGGER_FALLING,
+						chg->detect_irq_name[i], chg);
+		if (ret) {
+			dev_warn(chg->dev,
+				 "pen-detect %d IRQ %d failed (%d), polling only\n",
+				 i, irq, ret);
+			continue;
+		}
+
+		chg->detect_irq[i] = irq;
+		dev_info(chg->dev, "pen-detect %d IRQ %d\n", i, irq);
+	}
+
 	chg->irq = client->irq;
 	if (chg->irq > 0) {
 		snprintf(chg->irq_name, sizeof(chg->irq_name), "%s",
@@ -1115,6 +1269,8 @@ static int ra9530_probe(struct i2c_client *client)
 				     "failed to register the power supply\n");
 
 	INIT_DELAYED_WORK(&chg->monitor, ra9530_monitor_work);
+	INIT_DELAYED_WORK(&chg->detect_debounce, ra9530_detect_work);
+	INIT_DELAYED_WORK(&chg->detect_poll, ra9530_detect_poll_work);
 
 	mutex_lock(&chg->lock);
 	ret = ra9530_program_fod(chg);
@@ -1124,6 +1280,8 @@ static int ra9530_probe(struct i2c_client *client)
 			 ret);
 
 	schedule_delayed_work(&chg->monitor, 0);
+	schedule_delayed_work(&chg->detect_poll,
+			      msecs_to_jiffies(RA9530_DETECT_POLL_MS));
 
 	dev_info(chg->dev, "registered, FOD threshold %u mW\n", fod_mw_active);
 
@@ -1133,8 +1291,20 @@ static int ra9530_probe(struct i2c_client *client)
 static void ra9530_remove(struct i2c_client *client)
 {
 	struct ra9530_chg *chg = i2c_get_clientdata(client);
+	int i;
+
+	/*
+	 * The IRQs are devm-managed and only freed after this returns, so mask
+	 * them first: otherwise an edge could queue detect_work again right
+	 * after the flush below and run while the device is going away.
+	 */
+	for (i = 0; i < ARRAY_SIZE(chg->detect_irq); i++)
+		if (chg->detect_irq[i] > 0)
+			disable_irq(chg->detect_irq[i]);
 
 	cancel_delayed_work_sync(&chg->monitor);
+	cancel_delayed_work_sync(&chg->detect_debounce);
+	cancel_delayed_work_sync(&chg->detect_poll);
 
 	mutex_lock(&chg->lock);
 	ra9530_tx_disable(chg);
