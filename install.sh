@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # install.sh — 安装 RA9530 笔充电器：内核模块（DKMS 优先）+ 设备树节点
-#              + 用户态工具 + 充电守护
+#
+# 用户态那部分（BLE 电量、充电策略、停靠闸门）不在这里：见文件末尾。
 #
 #   sudo ./install.sh                  # 有 dkms 就用 DKMS（推荐：内核升级自动重编）
 #   sudo ./install.sh --plain          # 强制普通外置模块（内核升级后需手动重装）
@@ -41,7 +42,7 @@ if [[ ! -d "$KDIR" ]]; then
 fi
 
 # ---------------------------------------------------------------- 1) 模块
-echo "==> 1/4 内核模块"
+echo "==> 1/2 内核模块"
 
 # 先清掉所有旧副本（外置模块进 extra/，DKMS 进 updates/dkms/，而 updates/ 优先级更高）
 stale=$(find "$MODDIR" -name 'ra9530-charger.ko*' 2>/dev/null || true)
@@ -100,22 +101,8 @@ fi
 
 # ---------------------------------------------------------------- 2) 设备树
 echo
-echo "==> 2/4 设备树节点"
+echo "==> 2/2 设备树节点"
 "$HERE/driver/install-dt.sh"
-
-# ---------------------------------------------------------------- 3) 工具
-echo
-echo "==> 3/4 用户态工具 -> /usr/local/bin"
-install -m 0755 "$HERE/tools/ra9530-pen-battery.sh"   /usr/local/bin/ra9530-pen-battery.sh
-install -m 0755 "$HERE/tools/ra9530-charge-policy.sh" /usr/local/bin/ra9530-charge-policy.sh
-
-# ---------------------------------------------------------------- 4) 守护
-echo
-echo "==> 4/4 充电守护"
-install -m 0644 "$HERE/tools/ra9530-charge-policy.service" \
-	/etc/systemd/system/ra9530-charge-policy.service
-systemctl daemon-reload
-systemctl enable ra9530-charge-policy.service
 
 cat <<'EOF'
 
@@ -128,19 +115,27 @@ cat <<'EOF'
          dmesg | grep -i ra9530
          cat /sys/class/power_supply/ra9530-charger/status
          cat /sys/bus/i2c/devices/1-003b/rpp        # 非 0 = 笔在收功率
-         systemctl status ra9530-charge-policy
+         cat /sys/bus/i2c/devices/1-003b/pen_present
      DKMS 方式另查：
          dkms status
 
-  3) 笔的 BLE 电量（充电策略的依据）需要先配对一次：
-         bluetoothctl -> agent on; default-agent; scan on;
-                         pair <笔的地址>; trust <笔的地址>
-     然后：/usr/local/bin/ra9530-pen-battery.sh --verbose
-
-  4) 手动控制充电：
+  3) 手动控制充电：
          echo 0 | sudo tee /sys/bus/i2c/devices/1-003b/enabled
          echo 1 | sudo tee /sys/bus/i2c/devices/1-003b/enabled
 
   还原设备树：sudo driver/install-dt.sh --revert
   卸载 DKMS ：sudo dkms remove -m ra9530 -v <版本> --all
+
+这个仓库只装驱动和设备树。用户态在 zcc-aur 的 xiaomi-book-12.4-config 包里，装好即带
+systemd 单元（读 BLE 电量、按 85%/75% 控制充电、以及"笔吸在磁吸位上时屏蔽笔输入"的
+停靠闸门）：
+
+    # https://github.com/CerteKim/zcc-aur
+    sudo pacman -S xiaomi-book-12.4-config
+    systemctl status ra9530-charge-policy
+    /usr/local/bin/ra9530-pen-battery.sh --verbose
+
+    充电策略要读笔的电量，所以笔要先在 BlueZ 里配对一次：
+        bluetoothctl -> agent on; default-agent; scan on;
+                        pair <笔的地址>; trust <笔的地址>
 EOF

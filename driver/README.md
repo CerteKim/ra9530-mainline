@@ -146,6 +146,17 @@ cat /sys/bus/i2c/devices/1-003b/pen_present
 `rpp` (register `0x00A6`) is the most useful one: it is non-zero exactly while
 power is being delivered to the pen.
 
+`pen_present` is not just informational: the driver publishes changes to it with
+`sysfs_notify()`, so userspace can wait for the pen instead of polling it.  Read
+the value once, then `poll()` the attribute for **`POLLPRI` only** — the file
+always reports `DEFAULT_POLLMASK`, so asking for `POLLIN` returns immediately —
+and re-read it after each wake to re-arm.  The source is the two hall GPIOs: each
+is requested as an interrupt on both edges, the handler only defers to a 20 ms
+debounce work, and a one second tick re-reads the sensors to cover edges that are
+lost (across suspend) or that the hall does not produce while the pen rests at
+the edge of its field.  Measured end to end on this board, a hall transition
+reaches userspace in 3-6 ms.
+
 ## Known limitations / TODO
 
 * **This hardware never reports the pen's state of charge through the charger.**
@@ -200,9 +211,11 @@ power is being delivered to the pen.
   address).  Note also that a **fully charged pen still reports `rpp` ≈ 30**, so
   the `rpp`-based "stopped drawing" heuristic above does *not* trigger on this
   stylus; a percentage-driven policy is the one that works here.  The companion
-  scripts in the parent directory (`ra9530-pen-battery.sh`,
-  `ra9530-charge-policy.sh`) do exactly that on top of the writable `enabled`
-  attribute.
+  scripts (`ra9530-pen-battery.sh`, `ra9530-charge-policy.sh` and the systemd
+  unit) ship with the xiaomi-book-12.4-config package in the zcc-aur repository
+  rather than from here; they read that percentage and drive the writable
+  `enabled` attribute, and they wait on the `pen_present` notification documented
+  above to mute the digitizer's pen collection while the pen sits on its dock.
 * **`pen_mac` is not usable on this hardware.**  The charger raises `GET_BLE`
   and the sibling driver reads the stylus address from `0x00be`, but this
   variant returns `00:00:00:00:93:00` there, and the back-channel packet carries

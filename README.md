@@ -50,7 +50,7 @@ sudo dkms remove -m ra9530 -v 1.0.2 --all     # 卸载
 dmesg | grep -i ra9530                              # RA9530 rev 2 / transmitting (mode 0x04)
 cat /sys/class/power_supply/ra9530-charger/status   # Charging
 cat /sys/bus/i2c/devices/1-003b/rpp                 # 非 0 = 笔正在收功率
-/usr/local/bin/ra9530-pen-battery.sh                # 笔的准确电量（需先 BLE 配对）
+cat /sys/bus/i2c/devices/1-003b/pen_present         # 1 = 笔吸在磁吸位上
 ```
 
 手动控制充电：
@@ -62,6 +62,16 @@ echo 1 | sudo tee /sys/bus/i2c/devices/1-003b/enabled   # 开
 
 还原设备树：`sudo ./driver/install-dt.sh --revert`
 
+**用户态不在这里**：读笔的 BLE 电量、按 85%/75% 控制充电、以及"笔吸在磁吸位上时
+屏蔽笔输入"的停靠闸门，都在 **zcc-aur** 仓库的 `xiaomi-book-12.4-config` 包里，
+装好即带 systemd 单元：
+
+```sh
+sudo pacman -S xiaomi-book-12.4-config              # 见 github.com/CerteKim/zcc-aur
+systemctl status ra9530-charge-policy
+/usr/local/bin/ra9530-pen-battery.sh                # 笔的准确电量（需先 BLE 配对）
+```
+
 ---
 
 ## 目录结构
@@ -69,10 +79,13 @@ echo 1 | sudo tee /sys/bus/i2c/devices/1-003b/enabled   # 开
 | 路径 | 内容 |
 |---|---|
 | **`driver/`** | 内核驱动 `ra9530-charger.c`、Makefile/Kconfig、设备树绑定 `renesas,ra9530.yaml`、节点片段 `ra9530.dtsi`、DTB 补丁脚本 `install-dt.sh`、编译脚本 `build.sh`、驱动说明 `README.md` |
-| **`tools/`** | 用户态：`ra9530-pen-battery.sh`（BLE 读电量）、`ra9530-charge-policy.sh`（85% 停 / 75% 恢复）、对应的 systemd 单元 |
 | **`investigation/`** | 排查期间用的一次性脚本（探寄存器、扫引脚、抓 EPT、找电量…），保留作记录 |
 | **`notes/`** | [完整调查笔记](notes/ra9530-stylus-charger.md) 与 [可提交上游的报告](notes/ra9530-upstream-report.md) |
-| `install.sh` | 一键安装 |
+| `install.sh` | 一键安装（驱动 + 设备树） |
+
+> 原先这里有 `tools/`（BLE 电量读数、85%/75% 充电策略、systemd 单元）。它已经移出去，
+> 现在是 zcc-aur 的 `xiaomi-book-12.4-config` 包 —— 同一个守护在两个仓库各留一份迟早
+> 会漂，所以只保留包里的那一份。
 
 ---
 
@@ -101,12 +114,19 @@ echo 1 | sudo tee /sys/bus/i2c/devices/1-003b/enabled   # 开
 4. **GPIO**：`gpio11` = 电源开关（高有效）、`gpio186` = 7V 升压（高有效）、
    `gpio97`/`gpio189` = 两个霍尔（**读数不同即视为笔已吸附**）、
    `gpio101` = 芯片 INT（开漏低有效，用下降沿）。固件默认已把开关/升压拉高。
+   两个霍尔脚还各注册了**双边沿中断**：跳变时驱动回写 `pen_present` 并
+   `sysfs_notify()`，所以用户态只请求 `POLLPRI` 就能阻塞等通知，不必每秒轮询
+   （实测端到端 3~6 ms）。另有 1 秒一次的 `detect_poll`，覆盖挂起期间丢掉的边沿。
+   中断处理里只排一个 20 ms 的防抖 work —— 若在处理里直接干活，`IRQF_ONESHOT`
+   会在等锁期间屏蔽该线，monitor 持锁做 I2C 刷新时到达的边沿就丢了。
 
 5. **充电器从不上报笔的电量**（中断位图里永远没有 CSP/bit15），
    满电的笔也仍报 `rpp≈30`；**准确电量只能从笔自己的 BLE 拿**
    （`Xiaomi Smart Pen` 的 Battery Service，绑定后是 `org.bluez.Battery1`）。
-   因此"停充策略"由 [tools/ra9530-charge-policy.sh](tools/ra9530-charge-policy.sh)
-   读 BLE 电量 + 写驱动的 `enabled` 来实现。
+   因此"停充策略"由 zcc-aur 的 `xiaomi-book-12.4-config` 包里的
+   `ra9530-charge-policy.sh` 读 BLE 电量 + 写驱动的 `enabled` 来实现；它同时在
+   `pen_present` 上等驱动的中断通知，笔吸在磁吸位上时屏蔽数字化仪报的笔事件
+   （否则停靠中的笔被当成"悬停"，mutter 会把光标拽到磁吸位那个点）。
 
 6. **充电器无法提供笔的 BLE 地址**：参考驱动读的 `0x00BE` 在本变体上是
    `00:00:00:00:93:00`（非法值），包体里也只有 3 个字节对得上。地址请从 BLE

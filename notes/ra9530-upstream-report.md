@@ -383,5 +383,6 @@ Worth recording, because it is the one thing the charger cannot provide:
 
 So on this machine the split is: **the RA9530 charges the pen and owns the
 on/off decision; the pen's BLE supplies the state of charge.**  The driver
-exposes a writable `enabled` attribute for exactly that, and
-`ra9530-charge-policy.sh` uses it to stop at 85 % and resume at 75 %.
+exposes a writable `enabled` attribute for exactly that, and the companion
+policy script (shipped by the zcc-aur `xiaomi-book-12.4-config` package, not by
+this repository) uses it to stop at 85 % and resume at 75 %.
