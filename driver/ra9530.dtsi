@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Renesas RA9530 stylus charger — Xiaomi Book S 12.4 (SC8180X)
+ *
+ * Paste this into arch/arm64/boot/dts/qcom/sc8180x-xiaomi-book-12.4.dts
+ * (the &i2c7 node already exists there; the commented-out txra9530@3b stub can
+ * be deleted, it references a pinctrl label that does not exist in the tree).
+ *
+ * No pinctrl-0 is needed: the platform firmware already leaves all five pins
+ * muxed as plain GPIOs with the right bias/drive settings, and the driver only
+ * takes them over through gpiod.
+ */
+
+&i2c7 {
+	/*
+	 * The platform firmware declares 400 kHz for this bus (the ACPI
+	 * descriptor uses 0x00061A80).  The current in-tree value of 1 MHz makes
+	 * the bus marginal: broad i2cdetect sweeps produce
+	 * "Bus arbitration lost, clock line undriveable".
+	 */
+	clock-frequency = <400000>;
+
+	pen_charger: charger@3b {
+		compatible = "renesas,ra9530";
+		reg = <0x3b>;
+
+		/* external switch and 7 V boost; firmware leaves both on */
+		switch-gpios = <&tlmm 11 GPIO_ACTIVE_HIGH>;
+		boost-gpios = <&tlmm 186 GPIO_ACTIVE_HIGH>;
+
+		/*
+		 * Two hall sensors; the stylus is attached while they differ.
+		 * Measured on this board: gpio97 is low with the pen attached,
+		 * gpio189 stays high.
+		 */
+		pen-detect-gpios = <&tlmm 97 GPIO_ACTIVE_LOW>,
+				   <&tlmm 189 GPIO_ACTIVE_LOW>;
+
+		/* chip interrupt, open drain, active low */
+		interrupt-parent = <&tlmm>;
+		interrupts = <101 IRQ_TYPE_EDGE_FALLING>;
+
+		renesas,fod-mw = <500>;
+	};
+};

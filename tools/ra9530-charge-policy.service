@@ -1,0 +1,23 @@
+[Unit]
+Description=RA9530 stylus charge policy (stop charging once the pen's BLE battery is high)
+Documentation=file:/usr/local/bin/ra9530-charge-policy.sh
+After=bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+Type=simple
+# 阈值可调：HIGH=85（到此停充）/ LOW=75（到此恢复）/ INTERVAL=120（检查周期秒）
+Environment=HIGH=85
+Environment=LOW=75
+Environment=INTERVAL=120
+ExecStart=/usr/local/bin/ra9530-charge-policy.sh
+Restart=always
+RestartSec=30
+# 只读蓝牙 + 写一个 sysfs 属性，权限收紧
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

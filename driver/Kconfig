@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config RA9530_CHARGER
+	tristate "Renesas RA9530 wireless power transmitter (stylus charger)"
+	depends on I2C
+	depends on GPIOLIB || COMPILE_TEST
+	select POWER_SUPPLY
+	help
+	  Driver for the Renesas RA9530 (and the closely related IDT P9xxx
+	  family) wireless power transmitter, used in "WattShare" TRx mode to
+	  charge the active stylus of tablets such as the Xiaomi Book S 12.4.
+
+	  The chip is driven entirely over I2C; the reverse-mode foreign
+	  object detection threshold is programmed before transmit is enabled.
+
+	  To compile this driver as a module, choose M here: the module will be
+	  called ra9530-charger.

@@ -1,0 +1,9 @@
+# Kbuild 产物
+*.ko
+*.o
+*.mod
+*.mod.c
+.*.cmd
+.tmp_versions/
+modules.order
+Module.symvers

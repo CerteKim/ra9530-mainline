@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/renesas,ra9530.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Renesas RA9530 wireless power transmitter (stylus charger)
+
+maintainers:
+  - TODO <todo@example.com>
+
+description: |
+  The RA9530 and the closely related IDT/Renesas P9xxx family can act as a
+  wireless power transmitter in "WattShare" TRx mode.  Tablets use this to
+  charge the active stylus that attaches magnetically to the device.
+
+  The chip is controlled entirely over I2C.  Note that the reverse-mode
+  foreign object detection threshold has to be programmed before transmit is
+  enabled, otherwise the chip clamps its output to essentially nothing.
+
+properties:
+  compatible:
+    const: renesas,ra9530
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+    description:
+      Interrupt output of the chip.  It is open drain, active low and idle
+      high; a falling edge trigger is recommended.
+
+  switch-gpios:
+    maxItems: 1
+    description:
+      External power switch of the charger.  Optional, because platform
+      firmware normally leaves it asserted (and driving it low resets the
+      chip).
+
+  boost-gpios:
+    maxItems: 1
+    description:
+      Enable of the boost converter that produces the transmit supply.
+
+  pen-detect-gpios:
+    minItems: 1
+    maxItems: 2
+    description:
+      Hall sensors used to detect the stylus.  When two are given, the stylus
+      is present while the two read differently; with a single one, its
+      asserted state (per the GPIO polarity) means "present".
+
+  renesas,fod-mw:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    default: 500
+    description:
+      Reverse-mode foreign object detection threshold in mW.
+
+required:
+  - compatible
+  - reg
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        charger@3b {
+            compatible = "renesas,ra9530";
+            reg = <0x3b>;
+
+            switch-gpios = <&tlmm 11 GPIO_ACTIVE_HIGH>;
+            boost-gpios = <&tlmm 186 GPIO_ACTIVE_HIGH>;
+            pen-detect-gpios = <&tlmm 97 GPIO_ACTIVE_LOW>,
+                               <&tlmm 189 GPIO_ACTIVE_LOW>;
+
+            interrupt-parent = <&tlmm>;
+            interrupts = <101 IRQ_TYPE_EDGE_FALLING>;
+
+            renesas,fod-mw = <500>;
+        };
+    };
