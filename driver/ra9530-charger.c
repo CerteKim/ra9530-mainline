@@ -133,9 +133,18 @@
 #define RA9530_RPP_IDLE_MS	180000	/* 3 min of no draw => assume full */
 #define RA9530_RECHECK_MS	3600000	/* re-probe an hour later */
 
-static unsigned int fod_mw = 500;
+/*
+ * Reverse-mode FOD threshold.  The device tree is the authoritative source:
+ * the binding documents "renesas,fod-mw" and the board describes it.  This
+ * parameter overrides it for experiments; 0 - the default - means "not set",
+ * so the device tree value is used, or 500 mW when the property is absent.
+ */
+static unsigned int fod_mw;
 module_param(fod_mw, uint, 0644);
-MODULE_PARM_DESC(fod_mw, "Reverse-mode foreign object detection threshold in mW");
+MODULE_PARM_DESC(fod_mw, "Reverse-mode FOD threshold in mW (0 = use renesas,fod-mw, else 500)");
+
+/* the value the chip is actually programmed with; exposed per device */
+static unsigned int fod_mw_active = 500;
 
 static bool always_on;
 module_param(always_on, bool, 0644);
@@ -305,11 +314,12 @@ static int ra9530_program_fod(struct ra9530_chg *chg)
 {
 	int ret;
 
-	ret = ra9530_write8(chg, RA9530_REG_FOD_LOW, fod_mw & 0xff);
+	ret = ra9530_write8(chg, RA9530_REG_FOD_LOW, fod_mw_active & 0xff);
 	if (ret)
 		return ret;
 
-	return ra9530_write8(chg, RA9530_REG_FOD_HIGH, (fod_mw >> 8) & 0xff);
+	return ra9530_write8(chg, RA9530_REG_FOD_HIGH,
+			     (fod_mw_active >> 8) & 0xff);
 }
 
 static int ra9530_get_mode(struct ra9530_chg *chg, u8 *mode)
@@ -696,7 +706,7 @@ static DEVICE_ATTR_RW(enabled);
 static ssize_t fod_mw_show(struct device *dev, struct device_attribute *attr,
 			   char *buf)
 {
-	return sysfs_emit(buf, "%u\n", fod_mw);
+	return sysfs_emit(buf, "%u\n", fod_mw_active);
 }
 static DEVICE_ATTR_RO(fod_mw);
 
@@ -998,6 +1008,23 @@ static struct gpio_desc *ra9530_optional_gpio(struct ra9530_chg *chg,
 	return desc;
 }
 
+/*
+ * Effective reverse-mode FOD threshold: an explicitly loaded module parameter
+ * wins, otherwise the device tree, otherwise 500 mW.
+ */
+static unsigned int ra9530_resolve_fod_mw(struct device *dev)
+{
+	u32 val;
+
+	if (fod_mw)
+		return fod_mw;
+
+	if (!device_property_read_u32(dev, "renesas,fod-mw", &val))
+		return val;
+
+	return 500;
+}
+
 static int ra9530_probe(struct i2c_client *client)
 {
 	struct ra9530_chg *chg;
@@ -1020,6 +1047,8 @@ static int ra9530_probe(struct i2c_client *client)
 	chg->soc = -1;
 	mutex_init(&chg->lock);
 	i2c_set_clientdata(client, chg);
+
+	fod_mw_active = ra9530_resolve_fod_mw(&client->dev);
 
 	ret = ra9530_read16(chg, RA9530_REG_CHIP_ID, &chip_id);
 	if (ret) {
@@ -1096,7 +1125,7 @@ static int ra9530_probe(struct i2c_client *client)
 
 	schedule_delayed_work(&chg->monitor, 0);
 
-	dev_info(chg->dev, "registered, FOD threshold %u mW\n", fod_mw);
+	dev_info(chg->dev, "registered, FOD threshold %u mW\n", fod_mw_active);
 
 	return 0;
 }

@@ -17,7 +17,7 @@ KVER=$(uname -r)
 MODDIR=/lib/modules/$KVER
 DKMS_NAME=ra9530
 DKMS_VER=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' "$HERE/dkms.conf" 2>/dev/null | head -1)
-DKMS_VER=${DKMS_VER:-1.0}
+DKMS_VER=${DKMS_VER:-1.0.1}
 MODE=auto
 
 while [[ $# -gt 0 ]]; do

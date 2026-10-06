@@ -28,7 +28,7 @@ sudo reboot
 |---|---|---|
 | 内核升级后 | **自动为新内核重建** ✓ | 需手动重跑 `install.sh` ⚠ |
 | 模块位置 | `/lib/modules/<ver>/updates/dkms/` | `/lib/modules/<ver>/extra/` |
-| 源码副本 | `/usr/src/ra9530-1.0/` | 不复制 |
+| 源码副本 | `/usr/src/ra9530-1.0.1/` | 不复制 |
 
 ```sh
 sudo pacman -S dkms                # 若尚未安装
@@ -36,7 +36,7 @@ cd /path/to/ra9530-mainline
 sudo ./install.sh                  # 自动走 DKMS；想强制旧方式用 --plain
 
 dkms status                        # 查看状态
-sudo dkms remove -m ra9530 -v 1.0 --all     # 卸载
+sudo dkms remove -m ra9530 -v 1.0.1 --all     # 卸载
 ```
 
 改动源码后重新执行 `sudo ./install.sh` 即可（脚本会重新复制源码到 `/usr/src` 并重建）。

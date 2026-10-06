@@ -118,8 +118,12 @@ pass `always_on=1` to charge unconditionally.
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `fod_mw` | 500 | reverse-mode FOD threshold in mW |
+| `fod_mw` | 0 | override for the reverse-mode FOD threshold; 0 (the default) takes it from the device tree (`renesas,fod-mw`), falling back to 500 mW |
 | `always_on` | 0 | transmit even when no pen-detect GPIOs are present |
+
+The threshold itself comes from the device tree
+(`renesas,fod-mw`, described in the binding); the module parameter is only an
+override for experiments.
 
 ### Power supply
 
@@ -130,7 +134,8 @@ pass `always_on=1` to charge unconditionally.
 
 `mode`, `tx_data`, `irq_status`, `irq_seen`, `rpp`, `cep`, `iin`, `vin`,
 `rev_temp`, `die_temp`, `soc`, `packet`, `tx_active`, `pen_present`, `pen_mac`
-(informational; not usable on this variant), `fod_mw`, and the writable
+(informational; not usable on this variant), `fod_mw` (the effective
+threshold, whether it came from the device tree or the parameter), and the writable
 `enabled` — all under the device, e.g.
 
 ```sh
