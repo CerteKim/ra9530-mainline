@@ -19,7 +19,6 @@ set -euo pipefail
 
 DTBS=(
 	/boot/dtb/linux-mibook/qcom/sc8180x-xiaomi-book-12.4.dtb
-	/boot/dtb/linux-mibook/qcom/sc8180x-xiaomi-book-12.4-oc.dtb
 )
 I2C=/soc@0/geniqup@8c0000/i2c@89c000
 NODE=$I2C/charger@3b
