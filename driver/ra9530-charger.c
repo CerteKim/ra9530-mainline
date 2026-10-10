@@ -517,7 +517,7 @@ static void ra9530_pen_update(struct ra9530_chg *chg)
 static enum power_supply_property ra9530_psy_props[] = {
 	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_STATUS,
-	POWER_SUPPLY_PROP_CAPACITY,
+	POWER_SUPPLY_PROP_SCOPE,
 	POWER_SUPPLY_PROP_MODEL_NAME,
 	POWER_SUPPLY_PROP_MANUFACTURER,
 };
@@ -535,10 +535,18 @@ static int ra9530_psy_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_PRESENT:
 		val->intval = 1;
 		break;
-	case POWER_SUPPLY_PROP_CAPACITY:
-		/* 0xff means the pen has not reported a value yet */
-		val->intval = (chg->soc < 0 || chg->soc > RA9530_SOC_FULL) ?
-				0 : chg->soc;
+	case POWER_SUPPLY_PROP_SCOPE:
+		/*
+		 * This charger feeds the stylus, not the system.  Saying so keeps
+		 * UPower from counting it as a second system battery: its
+		 * up_device_supply_battery class rejects a "device" scope, and the
+		 * generic supply class then ignores a device-scope supply that has
+		 * no capacity attribute.  Without this the composite laptop
+		 * percentage is recomputed as an energy-weighted average over two
+		 * batteries and no longer matches the EC's capacity, and GNOME
+		 * shows a phantom 0 % battery next to the real one.
+		 */
+		val->intval = POWER_SUPPLY_SCOPE_DEVICE;
 		break;
 	case POWER_SUPPLY_PROP_STATUS:
 		if (!chg->pen_present)
